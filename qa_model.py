@@ -68,9 +68,9 @@ class Encoder(object):
                                                                         dtype= tf.float32
                                                                     )
         # Add a sentinal vector to allow the model to not attend to any particular word in input
-        init_sent = tf.random_uniform(shape=[batch_size, 1 , tf.shape(contexts_encoder_outputs)[2]])
-        context_sentinal_vector = tf.Variable(init_sent,validate_shape=False)
-        contexts_encoder_outputs = tf.concat([contexts_encoder_outputs, context_sentinal_vector], axis=1)
+        context_sentinal_vector = tf.Variable(tf.random_uniform(shape=[1 , self.size]))
+        context_sentinal_vector_stacked = tf.tile(tf.reshape(context_sentinal_vector,[1,1,-1]),[batch_size, 1, 1])
+        contexts_encoder_outputs = tf.concat([contexts_encoder_outputs, context_sentinal_vector_stacked], axis=1)
         # contexts_encoder_outputs (batch_size, m+1, output_size)
 
         questions_encoder_cell = tf.contrib.rnn.LSTMCell(self.size)
@@ -85,9 +85,9 @@ class Encoder(object):
         batch_size_int, max_length_ques_int, output_size_int  = questions_encoder_outputs.get_shape().as_list()
         
         # Add a sentinal vector to allow the model to not attend to any particular word in input    
-        question_sentinal_vector = tf.Variable(tf.random_uniform(shape=(batch_size_tensor, 1, output_size_tensor)), 
-                                                validate_shape=False, name="ques_sent")
-        questions_encoder_outputs = tf.concat([questions_encoder_outputs, question_sentinal_vector], axis=1)
+        question_sentinal_vector = tf.Variable(tf.random_uniform(shape=(1, self.size)))
+        question_sentinal_vector_stacked = tf.tile(tf.reshape(question_sentinal_vector,[1,1,-1]), [batch_size, 1, 1])                       
+        questions_encoder_outputs = tf.concat([questions_encoder_outputs, question_sentinal_vector_stacked], axis=1)
         # questions_encoder_outputs (batch_size, n+1, output_size)
 
         # For variation between question and context encoding space, add a non-linear projection layer
