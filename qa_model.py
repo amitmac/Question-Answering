@@ -194,7 +194,6 @@ class Decoder(object):
             beta = hmn(knowledge_rep, 
                     cell_state[1], 
                     inp, scope="end")
-            print("{0} iterations done".format(i))
 
             # alpha and beta - [batch_size x context_max_length] - score for each word in each batch
             s = tf.argmax(alpha, 1)
@@ -235,7 +234,7 @@ class QASystem(object):
             self.setup_embeddings()
             self.setup_system()
             self.setup_loss()
-
+            self.train_op = self.add_training_op(self.loss)
 
     def setup_system(self):
         """
@@ -278,10 +277,8 @@ class QASystem(object):
             self.inputs_context = tf.nn.embedding_lookup(self.embeddings, self.contexts_placeholder)
 
     def add_training_op(self, loss):
-        optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.001)
-        
+        optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
         train_op = optimizer.minimize(loss)
-        
         return train_op
 
     def optimize(self, session, train_x, train_y, mask_context, embeddings, dropout=0.5):
@@ -297,10 +294,7 @@ class QASystem(object):
             self.label_spans_placeholder: train_y,
             self.dropout_placeholder: dropout
         }
-        self.train_op = self.add_training_op(self.loss)
         output_feed = [self.loss, self.train_op]
-        #output_feed = [self.start, self.end]
-        #output_feed = [self.b_size]
         outputs = session.run(output_feed, input_feed)
 
         return outputs
