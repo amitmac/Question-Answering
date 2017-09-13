@@ -47,7 +47,7 @@ def initialize_model(session, model, train_dir):
         model.saver.restore(session, ckpt.model_checkpoint_path)
     else:
         logging.info("Created model with fresh parameters.")
-        session.run(tf.global_variables_initializer())
+        session.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
         logging.info('Num params: %d' % sum(v.get_shape().num_elements() for v in tf.trainable_variables()))
     return model
 
@@ -165,7 +165,7 @@ def main(_):
     with tf.Session() as sess:
         load_train_dir = get_normalized_train_dir(FLAGS.load_train_dir or FLAGS.train_dir)
         initialize_model(sess, qa, load_train_dir)
-
+        
         save_train_dir = get_normalized_train_dir(FLAGS.train_dir)
         qa.train(sess, dataset, save_train_dir, embeddings['glove'])
 

@@ -162,7 +162,9 @@ class Decoder(object):
 
         # Random start and end for the answer span
         init_span = np.random.choice(self.max_length, 2)
-        s, e = [init_span[0]]*batch_size, [init_span[1]]*batch_size
+
+        s = tf.tile([init_span[0]],[batch_size])
+        e = tf.tile([init_span[1]],[batch_size])
 
         hs_size = cell_state[1].get_shape().as_list()[1]
         us_size = knowledge_rep.get_shape().as_list()[2]
@@ -176,9 +178,9 @@ class Decoder(object):
         for i in range(self.max_iterations):
             s = tf.to_int32(s)
             e = tf.to_int32(e)
-
-            si = tf.stack([tf.range(batch_size),s], axis=1)
-            ei = tf.stack([tf.range(batch_size),e], axis=1)
+            
+            si = tf.stack([tf.range(batch_size), s], axis=1)
+            ei = tf.stack([tf.range(batch_size), e], axis=1)
 
             inp = tf.concat([tf.gather_nd(knowledge_rep, si), 
                              tf.gather_nd(knowledge_rep, ei)], axis=1)
@@ -201,6 +203,9 @@ class Decoder(object):
         preds = {'alpha':alpha, 'beta':beta}
         
         return  s, e, preds
+    
+    def check_size(self, knowledge_rep):
+        return tf.shape(knowledge_rep)[0]
 
 class QASystem(object):
     def __init__(self, encoder, decoder, context_max_len, ques_max_len, batch_size=None):
@@ -230,7 +235,7 @@ class QASystem(object):
             self.setup_embeddings()
             self.setup_system()
             self.setup_loss()
-        
+
 
     def setup_system(self):
         """
@@ -239,6 +244,10 @@ class QASystem(object):
         """
         knowledge_rep = self.encoder.encode((self.inputs_context, self.inputs_question))
         self.start, self.end, self.preds = self.decoder.decode(knowledge_rep, self.batch_size)
+
+    def check_(self):
+        knowledge_rep = self.encoder.encode((self.inputs_context, self.inputs_question))
+        self.b_size = self.decoder.check_size(knowledge_rep)
 
     def setup_loss(self):
         """
@@ -269,8 +278,10 @@ class QASystem(object):
             self.inputs_context = tf.nn.embedding_lookup(self.embeddings, self.contexts_placeholder)
 
     def add_training_op(self, loss):
-        optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
+        optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.001)
+        
         train_op = optimizer.minimize(loss)
+        
         return train_op
 
     def optimize(self, session, train_x, train_y, mask_context, embeddings, dropout=0.5):
@@ -288,7 +299,8 @@ class QASystem(object):
         }
         self.train_op = self.add_training_op(self.loss)
         output_feed = [self.loss, self.train_op]
-
+        #output_feed = [self.start, self.end]
+        #output_feed = [self.b_size]
         outputs = session.run(output_feed, input_feed)
 
         return outputs
@@ -415,6 +427,9 @@ class QASystem(object):
 
         tic = time.time()
         params = tf.trainable_variables()
+        #variables_names = [v.name for v in params]
+        #values = session.run(variables_names)
+        #print(variables_names)
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
@@ -426,16 +441,19 @@ class QASystem(object):
         mask_context, mask_ques = mask_data
 
         num_batches = int(inputs_size / batch_size)
-        print(inputs_size, batch_size, num_batches)
+        #session.run(session.graph.get_tensor_by_name('beta2_power:0').assign(0.99))
         saver = tf.train.Saver()
         for i in range(num_epochs):
             for j in range(num_batches):
                 train_context_batch = train_context_data[j*num_batches:(j+1)*num_batches]
                 mask_context_batch = mask_context[j*num_batches:(j+1)*num_batches]
                 train_question_batch = train_question_data[j*num_batches:(j+1)*num_batches]
+                train_span_batch = train_span_data[j*num_batches:(j+1)*num_batches]
+                
                 train_loss, train_op = self.optimize(session, 
                                                      [train_context_batch, train_question_batch], 
-                                                     train_span_data, mask_context_batch, embeddings)
+                                                     train_span_batch, mask_context_batch, embeddings)
+                
             print("Loss after {0} epochs, {1}".format(i,train_loss))
             save_time = "{:%Y%m%d_%H%M%S}".format(datetime.now())
             saver.save(session, pjoin(train_dir, save_time + "_model.weights"))
