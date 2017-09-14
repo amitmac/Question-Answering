@@ -12,7 +12,7 @@ from six.moves import xrange
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
 
-from evaluate import exact_match_score, f1_score
+from evaluate import exact_match_score, f1_score, metric_max_over_ground_truths
 from hmn_model import HMN
 
 logging.basicConfig(level=logging.INFO)
@@ -92,11 +92,13 @@ class Encoder(object):
 
         # For variation between question and context encoding space, add a non-linear projection layer
         with tf.variable_scope("encoder"):
-            W_ques_proj = tf.get_variable("W_ques_proj",shape=(max_length_ques_int + 1, output_size_int), 
+            W_ques_proj = tf.get_variable("W_ques_proj",shape=(1, output_size_int, output_size_int), 
                                       initializer=tf.contrib.layers.xavier_initializer())
             b_ques_proj = tf.get_variable("b_ques_proj",shape=(output_size_int,), initializer=tf.zeros_initializer())
+        
+        W_ques_proj = tf.tile(W_ques_proj,[batch_size, 1, 1])
         # # final_questions_encoder_outputs - [batch_size, n+1, output_size]
-        final_questions_encoder_outputs = tf.nn.tanh(tf.multiply(W_ques_proj, questions_encoder_outputs) + b_ques_proj)
+        final_questions_encoder_outputs = tf.nn.tanh(tf.matmul(questions_encoder_outputs, W_ques_proj) + b_ques_proj)
 
         # Coattention Encoder
         aff_scores = tf.matmul(contexts_encoder_outputs, tf.transpose(final_questions_encoder_outputs,[0,2,1]))
@@ -133,9 +135,8 @@ class Encoder(object):
 
 
 class Decoder(object):
-    def __init__(self, output_size, max_length, max_iterations=4):
+    def __init__(self, output_size, max_iterations=4):
         self.output_size = output_size
-        self.max_length = max_length    # context maximum length
         self.max_iterations = max_iterations
 
     def decode(self, knowledge_rep, batch_size=None):
@@ -145,10 +146,10 @@ class Decoder(object):
         which should be the end of the answer span.
 
         args:
-            -   knowledge_rep: it is a representation of the paragraph and question,
-                              decided by how you choose to implement the encoder
+            -   knowledge_rep:  representation of the context and question returned by
+                                encoder
         return:
-            -   
+            -   start and end of span and prediction score for all the words in the context
         """
         decoder_cell = tf.contrib.rnn.LSTMCell(self.output_size)
         
@@ -158,10 +159,13 @@ class Decoder(object):
         # Get the batch size to get zero state of LSTM 
         if batch_size is None:
             batch_size = tf.shape(knowledge_rep)[0]
+        
         cell_state = decoder_cell.zero_state(batch_size, tf.float32)
 
+        max_length = tf.shape(knowledge_rep)[1]
+
         # Random start and end for the answer span
-        init_span = np.random.choice(self.max_length, 2)
+        init_span = tf.random_uniform(shape=[2,], maxval=max_length, dtype=tf.int32)
 
         s = tf.tile([init_span[0]],[batch_size])
         e = tf.tile([init_span[1]],[batch_size])
@@ -170,7 +174,7 @@ class Decoder(object):
         us_size = knowledge_rep.get_shape().as_list()[2]
 
         # Create Highway Maxout Network class object
-        hmn = HMN(hs_size, us_size, batch_size, self.max_length)
+        hmn = HMN(hs_size, us_size, batch_size, max_length)
         
         hmn.initialize_weights("start")
         hmn.initialize_weights("end")
@@ -199,25 +203,23 @@ class Decoder(object):
             s = tf.argmax(alpha, 1)
             e = tf.argmax(beta, 1)
         
-        preds = {'alpha':alpha, 'beta':beta}
+        preds = [alpha, beta]
         
         return  s, e, preds
-    
-    def check_size(self, knowledge_rep):
-        return tf.shape(knowledge_rep)[0]
 
 class QASystem(object):
-    def __init__(self, encoder, decoder, context_max_len, ques_max_len, batch_size=None):
+    def __init__(self, encoder, decoder, context_max_len=None, ques_max_len=None, batch_size=None):
         """
         Initializes your System
 
         :param encoder: an encoder that you constructed in train.py
         :param decoder: a decoder that you constructed in train.py
-        :param args: pass in more arguments as needed
         """
         self.encoder = encoder
         self.decoder = decoder
 
+        # These are None. Earlier value was being passed initially but that makes 
+        # things hard while testing as we don't want to pad then.
         self.context_max_len = context_max_len
         self.ques_max_len = ques_max_len
         self.batch_size = batch_size
@@ -229,38 +231,32 @@ class QASystem(object):
         self.dropout_placeholder = tf.placeholder(dtype=tf.float32)
         self.mask_placeholder = tf.placeholder(shape=(batch_size, self.context_max_len), dtype=tf.bool)
 
-        # ==== assemble pieces ====
+        # Setup the computational graph
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
             self.setup_embeddings()
             self.setup_system()
             self.setup_loss()
-            self.train_op = self.add_training_op(self.loss)
+            self.add_training_op(self.loss)
 
     def setup_system(self):
         """
-        After your modularized implementation of encoder and decoder, call various 
-        functions inside encoder, decoder here to assemble your reading comprehension system!
+        Calling encoder, decoder functions to assemble the reading comprehension system.
         """
         knowledge_rep = self.encoder.encode((self.inputs_context, self.inputs_question))
-        self.start, self.end, self.preds = self.decoder.decode(knowledge_rep, self.batch_size)
-
-    def check_(self):
-        knowledge_rep = self.encoder.encode((self.inputs_context, self.inputs_question))
-        self.b_size = self.decoder.check_size(knowledge_rep)
+        self.start, self.end, preds = self.decoder.decode(knowledge_rep, self.batch_size)
+        self.alpha, self.beta = preds
 
     def setup_loss(self):
         """
-        Set up your loss computation here
-        :return:
+        Loss computation
         """
         with vs.variable_scope("loss"):
             cross_entropy_s = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.label_spans_placeholder[:,0],
-                                                                             logits=self.preds['alpha'])
+                                                                             logits=self.alpha)
             cross_entropy_e = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.label_spans_placeholder[:,1],
-                                                                             logits=self.preds['beta'])
-            # print(cross_entropy_s.get_shape().as_list(), self.preds['alpha'].get_shape().as_list(),
-            #      self.label_spans_placeholder[:,0].get_shape().as_list())
-
+                                                                             logits=self.beta)
+            
+            # This needs more thinking on how masking can be done.
             # x = tf.boolean_mask(cross_entropy_s, self.mask_placeholder)
             # y = tf.boolean_mask(cross_entropy_e, self.mask_placeholder)
         
@@ -269,8 +265,7 @@ class QASystem(object):
 
     def setup_embeddings(self):
         """
-        Loads distributed word representations based on placeholder tokens
-        :return:
+        Loads distributed word representations based on placeholder tokensS
         """
         with vs.variable_scope("embeddings"):
             self.inputs_question = tf.nn.embedding_lookup(self.embeddings, self.questions_placeholder)
@@ -278,14 +273,18 @@ class QASystem(object):
 
     def add_training_op(self, loss):
         optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
-        train_op = optimizer.minimize(loss)
-        return train_op
+        self.train_op = optimizer.minimize(loss)
 
     def optimize(self, session, train_x, train_y, mask_context, embeddings, dropout=0.5):
         """
-        Takes in actual data to optimize your model
-        This method is equivalent to a step() function
-        :return:
+        Takes in actual data to optimize your model.
+        args:
+            session - tensorflow session
+            train_x - (context_tokens, question_tokens)
+            train_y - answer span (e.g. [2 5])
+            embeddings - word embedding for each word in vocabulary
+        return:
+            loss and train_op
         """
         input_feed = {
             self.questions_placeholder: train_x[1],
@@ -299,7 +298,7 @@ class QASystem(object):
 
         return outputs
 
-    def test(self, session, valid_x, valid_y):
+    def test(self, session, valid_x, valid_y, embeddings):
         """
         Compute a cost for your validation set and tune your hyperparameters
         according to the validation set performance.
@@ -310,16 +309,17 @@ class QASystem(object):
             self.questions_placeholder: valid_x[1],
             self.contexts_placeholder: valid_x[0],
             self.label_spans_placeholder: valid_y,
+            self.embeddings: embeddings,
             self.dropout_placeholder: 1.0
         }
 
-        output_feed = [self.loss]
+        output_feed = self.loss
 
         outputs = session.run(output_feed, input_feed)
 
         return outputs
 
-    def decode(self, session, test_x):
+    def decode(self, session, test_x, embeddings):
         """
         Returns the probability distribution over different positions in the paragraph
         so that other methods like self.answer() will be able to work properly
@@ -328,44 +328,53 @@ class QASystem(object):
         input_feed = {
             self.questions_placeholder: test_x[1],
             self.contexts_placeholder: test_x[0],
+            self.embeddings: embeddings,
             self.dropout_placeholder: 1.0
         }
 
-        output_feed = [self.pred]
+        output_feed = [self.alpha, self.beta]
 
         outputs = session.run(output_feed, input_feed)
 
         return outputs
 
-    def answer(self, session, test_x):
-
-        yp, yp2 = self.decode(session, test_x)
-
-        a_s = np.argmax(yp, axis=1)
-        a_e = np.argmax(yp2, axis=1)
+    def answer(self, session, test_x, embeddings):
+        
+        a_s = []
+        a_e = []
+        
+        for i in range(len(test_x[0])):
+            pred = self.decode(session, 
+                               (np.reshape(test_x[0][i],[1, len(test_x[0][i])]), 
+                                np.reshape(test_x[1][i],[1, len(test_x[1][i])])), 
+                               embeddings)
+            a_s.append(np.argmax(pred[0]))
+            a_e.append(np.argmax(pred[1]))
 
         return (a_s, a_e)
 
-    def validate(self, sess, valid_dataset):
+    def validate(self, sess, valid_dataset, embeddings):
         """
-        Iterate through the validation dataset and determine what
-        the validation cost is.
+        Iterate through the validation dataset and determine what the validation cost
+        is. This method calls self.test() which explicitly calculates validation cost.
 
-        This method calls self.test() which explicitly calculates validation cost.
-
-        How you implement this function is dependent on how you design
-        your data iteration function
-
-        :return:
+        args:
+            sess - running tensorflow session
+            valid_dataset - ((valid_context_tokens, valid_question_tokens), valid_answer_tokens)
+        return:
+            valid_cost - validation set loss
         """
-        valid_cost = 0
-
+        valid_cost = 0.
         for valid_x, valid_y in valid_dataset:
-            valid_cost = self.test(sess, valid_x, valid_y)
+            context = np.reshape(valid_x[0],(1,len(valid_x[0])))
+            question = np.reshape(valid_x[1],(1,len(valid_x[1])))
+            answer = np.reshape(valid_y,(1,len(valid_y)))
+            valid_cost = self.test(sess, (context, question), answer, embeddings)
 
         return valid_cost
 
-    def evaluate_answer(self, session, dataset, sample=100, log=False):
+    def evaluate_answer(self, session, val_context_dataset, val_question_dataset, 
+                           val_answer_dataset, embeddings, sample=100, log=False):
         """
         Evaluate the model's performance using the harmonic mean of F1 and Exact Match (EM)
         with the set of true answer labels
@@ -373,23 +382,50 @@ class QASystem(object):
         This step actually takes quite some time. So we can only sample 100 examples
         from either training or testing set.
 
-        :param session: session should always be centrally managed in train.py
-        :param dataset: a representation of our data, in some implementations, you can
-                        pass in multiple components (arguments) of one dataset to this function
-        :param sample: how many examples in dataset we look at
-        :param log: whether we print to std out stream
-        :return:
+        args:
+            session: session should always be centrally managed in train.py
+            dataset: a representation of our data (context, question, answer_span)
+            sample: how many examples in dataset we look at
+            log: whether we print to std out stream
+        
+        return:
+            (f1, em): f1-score and exact match score
         """
+        (val_context_tokens_data, val_context_words_data) = val_context_dataset
+        (val_question_tokens_data, val_question_words_data) = val_question_dataset
+        (val_answer_tokens_data, val_answer_words_data) = val_answer_dataset
+        
+        start, end = self.answer(session, (val_context_tokens_data, val_question_tokens_data), embeddings)
+        predictions = []
+        for i in range(len(start)):
+            ans = ""
+            for j in range(start[i], end[i]):
+                ans += val_context_words_data[i][j] + " "
+            ans.strip()
+            predictions.append(ans)
+        print(len(val_context_tokens_data))
+        assert len(predictions) == len(val_answer_words_data),"Shape of predictions and ground truths doesn't match."
+        
+        exact_match = 0
+        f1 = 0
 
-        f1 = 0.
-        em = 0.
+        # Exact Match and F1 Score
+        for i in range(len(predictions)):
+            exact_match += metric_max_over_ground_truths(exact_match_score, predictions[i], val_answer_words_data[i])
+            f1 += metric_max_over_ground_truths(f1_score, predictions[i], val_answer_words_data[i])
+        
+        total = len(predictions)
+        
+        em = 100.0 * exact_match / total
+        f1 = 100.0 * f1 / total
 
+        # Log the results
         if log:
-            logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
+            logging.info("F1 Score: {}, EM Score: {}".format(f1, em))
 
         return f1, em
 
-    def train(self, session, dataset, train_dir, embeddings, batch_size=8, num_epochs=10):
+    def train(self, session, train_dataset, valid_dataset, train_dir, embeddings, batch_size=8, num_epochs=10):
         """
         Implement main training loop
 
@@ -413,29 +449,29 @@ class QASystem(object):
         :return:
         """
 
-        # some free code to print out number of parameters in your model
-        # it's always good to check!
-        # you will also want to save your model parameters in train_dir
-        # so that you can use your trained model to make predictions, or
-        # even continue training
-
+        # Number of parameters in your model
         tic = time.time()
         params = tf.trainable_variables()
-        #variables_names = [v.name for v in params]
-        #values = session.run(variables_names)
-        #print(variables_names)
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
 
-        inputs, train_span_data, mask_data = dataset
+        # Segregate the train data
+        inputs, train_span_data, mask_data = train_dataset
         train_context_data, train_question_data = inputs
         inputs_size = len(train_context_data)
 
+        # Segregate the validation data
+        (val_context_dataset, val_question_dataset, val_answer_dataset) = valid_dataset
+        (val_context_tokens_data, val_context_words_data) = val_context_dataset
+        (val_question_tokens_data, val_question_words_data) = val_question_dataset
+        (val_answer_tokens_data, val_answer_words_data) = val_answer_dataset
+
+        valid_dataset = zip(zip(val_context_tokens_data, val_question_tokens_data), val_answer_tokens_data)
         mask_context, mask_ques = mask_data
 
         num_batches = int(inputs_size / batch_size)
-        #session.run(session.graph.get_tensor_by_name('beta2_power:0').assign(0.99))
+
         saver = tf.train.Saver()
         for i in range(num_epochs):
             for j in range(num_batches):
@@ -447,8 +483,23 @@ class QASystem(object):
                 train_loss, train_op = self.optimize(session, 
                                                      [train_context_batch, train_question_batch], 
                                                      train_span_batch, mask_context_batch, embeddings)
-                
-            print("Loss after {0} epochs, {1}".format(i,train_loss))
+
+            print("Training Loss after {0} epochs, {1}".format(i,train_loss))
+            
+            print("###### Calculating Loss on validation set after epoch {}...".format(i))
+            
+            valid_loss = self.validate(session, valid_dataset, embeddings)
+            
+            print("Validation Loss after {0} epochs, {1}".format(i,valid_loss))
+
+            print("###### Evaluating F1 score and EM score...")
+
+            f1, em = self.evaluate_answer(session, 
+                                    val_context_dataset, 
+                                    val_question_dataset, 
+                                    val_answer_dataset, embeddings, log=True)
+
+            print("After {} epochs, F1 Score: {}, EM Score: {}".format(i, f1, em))
+
             save_time = "{:%Y%m%d_%H%M%S}".format(datetime.now())
             saver.save(session, pjoin(train_dir, save_time + "_model.weights"))
-            

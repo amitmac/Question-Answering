@@ -9,9 +9,9 @@ class HMN():
     def __init__(self, hs_size, us_size, batch_size, max_length, max_pool_size=16):
         self.hs_size = hs_size # 200
         self.us_size = us_size # 400
-        self.max_pool_size = max_pool_size # 16
-        self.batch_size = batch_size # 10
-        self.max_length = max_length # 400
+        self.max_pool_size = max_pool_size
+        self.batch_size = batch_size
+        self.max_length = max_length
 
     def __call__(self, inputs, hidden_state, previous_outputs, scope):
         """

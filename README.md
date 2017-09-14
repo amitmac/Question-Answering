@@ -20,7 +20,6 @@ Loss after 8 epochs, 4.51838302612
 Loss after 9 epochs, 3.2650642395  
 
 ### Things to implement -
-* Evaluation Metrics - F1 score and Exact Match
 * Masking to avoid training using paddings
 
 This is a part of assignment 4 of Stanford course CS224n. Some part of code was already given as a start point.

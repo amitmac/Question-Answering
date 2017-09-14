@@ -40,15 +40,19 @@ FLAGS = tf.app.flags.FLAGS
 
 
 def initialize_model(session, model, train_dir):
-    ckpt = tf.train.get_checkpoint_state(train_dir)
-    v2_path = ckpt.model_checkpoint_path + ".index" if ckpt else ""
-    if ckpt and (tf.gfile.Exists(ckpt.model_checkpoint_path) or tf.gfile.Exists(v2_path)):
-        logging.info("Reading model parameters from %s" % ckpt.model_checkpoint_path)
-        model.saver.restore(session, ckpt.model_checkpoint_path)
-    else:
-        logging.info("Created model with fresh parameters.")
-        session.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
-        logging.info('Num params: %d' % sum(v.get_shape().num_elements() for v in tf.trainable_variables()))
+    # ckpt = tf.train.get_checkpoint_state(train_dir)
+    # v2_path = ckpt.model_checkpoint_path + ".index" if ckpt else ""
+    # if ckpt and (tf.gfile.Exists(ckpt.model_checkpoint_path) or tf.gfile.Exists(v2_path)):
+    #     logging.info("Reading model parameters from %s" % ckpt.model_checkpoint_path)
+    #     model.saver.restore(session, ckpt.model_checkpoint_path)
+    # else:
+    #     logging.info("Created model with fresh parameters.")
+    #     session.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
+    #     logging.info('Num params: %d' % sum(v.get_shape().num_elements() for v in tf.trainable_variables()))
+    logging.info("Created model with fresh parameters.")
+    session.run(tf.global_variables_initializer())
+    session.run(tf.local_variables_initializer())
+    logging.info('Num params: %d' % sum(v.get_shape().num_elements() for v in tf.trainable_variables()))
     return model
 
 
@@ -80,11 +84,25 @@ def get_normalized_train_dir(train_dir):
     return global_train_dir
 
 def get_data(data_path):
+    """
+    Get tokenized data in form of list of lists
+    """
     if tf.gfile.Exists(data_path):
         data = []
         with tf.gfile.GFile(data_path, mode="rb") as f:
             for line in f.readlines():
                 data.append([int(x) for x in line.strip().split()])
+        return data
+    else:
+        raise ValueError("Data file %s not found.", data_path)
+
+def get_raw_data(data_path):
+    """
+    Get raw data in form of list of strings
+    """
+    if tf.gfile.Exists(data_path):
+        with tf.gfile.GFile(data_path, mode="rb") as f:
+            data = f.readlines()
         return data
     else:
         raise ValueError("Data file %s not found.", data_path)
@@ -116,7 +134,6 @@ def pad_sequences(data, max_length, tuples=False):
                 mask_b.append([True]*len(y) + [False]*(max_length[1] - len(y)))
         new_data = (a, b)
         mask_data = (mask_a, mask_b)
-        print("Count", count)
     else:
         new_data = [d + [PAD_ID]*(max_length - len(d)) for d in data if len(d) < max_length]
         mask_data = [[True]*len(d) + [False]*(max_length - len(d)) for d in data if len(d) < max_length]
@@ -127,18 +144,17 @@ def main(_):
     # Do what you need to load datasets from FLAGS.data_dir
     train_context_data = get_data(pjoin(FLAGS.data_dir, "train.ids.context"))
     train_question_data = get_data(pjoin(FLAGS.data_dir, "train.ids.question"))
-    print("Train Context", len(train_context_data))
+    
     context_max_len = 500
     ques_max_len = 40
     # Pad data with PAD_ID
     inputs, mask_data = pad_sequences(zip(train_context_data, train_question_data), 
                            (context_max_len,ques_max_len), tuples=True)
     print("Input padding done!")
-    print("Train Context inputs", len(inputs[0]))
     train_span_data = get_data(pjoin(FLAGS.data_dir, "train.span"))
     print("Train span data loaded!")
 
-    dataset = (inputs, train_span_data, mask_data)
+    train_dataset = (inputs, train_span_data, mask_data)
 
     embed_path = pjoin(FLAGS.data_dir, "glove.trimmed.{}.npz".format(FLAGS.embedding_size))
     vocab_path = pjoin(FLAGS.data_dir, "vocab.dat")
@@ -147,9 +163,9 @@ def main(_):
     print("Vocabulary of size {0} initialized!".format(vocab_size))
 
     encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, vocab_size=vocab_size)
-    decoder = Decoder(output_size=FLAGS.state_size, max_length=context_max_len)
+    decoder = Decoder(output_size=FLAGS.state_size)
 
-    qa = QASystem(encoder, decoder, context_max_len, ques_max_len)
+    qa = QASystem(encoder, decoder, context_max_len=None, ques_max_len=None)
 
     if not os.path.exists(FLAGS.log_dir):
         os.makedirs(FLAGS.log_dir)
@@ -158,6 +174,20 @@ def main(_):
 
     embeddings = np.load(embed_path)
     
+    val_context_tokens_data = get_data(pjoin(FLAGS.data_dir, "val.ids.context"))
+    val_question_tokens_data = get_data(pjoin(FLAGS.data_dir, "val.ids.question"))
+    val_answer_tokens_data = get_data(pjoin(FLAGS.data_dir, "val.span"))
+    
+    val_context_words_data = get_raw_data(pjoin(FLAGS.data_dir, "val.context"))
+    val_question_words_data = get_raw_data(pjoin(FLAGS.data_dir, "val.question"))
+    val_answer_words_data = get_raw_data(pjoin(FLAGS.data_dir, "val.answer"))
+    
+    val_context_dataset = (val_context_tokens_data, val_context_words_data)
+    val_question_dataset = (val_question_tokens_data, val_question_words_data)
+    val_answer_dataset = (val_answer_tokens_data, val_answer_words_data)
+
+    valid_dataset = (val_context_dataset, val_question_dataset, val_answer_dataset)
+
     print(vars(FLAGS))
     with open(os.path.join(FLAGS.log_dir, "flags.json"), 'w') as fout:
         json.dump(FLAGS.__flags, fout)
@@ -165,11 +195,15 @@ def main(_):
     with tf.Session() as sess:
         load_train_dir = get_normalized_train_dir(FLAGS.load_train_dir or FLAGS.train_dir)
         initialize_model(sess, qa, load_train_dir)
-        
         save_train_dir = get_normalized_train_dir(FLAGS.train_dir)
-        qa.train(sess, dataset, save_train_dir, embeddings['glove'])
 
-        qa.evaluate_answer(sess, dataset, vocab, FLAGS.evaluate, log=True)
+        qa.train(sess, train_dataset, valid_dataset, save_train_dir, embeddings['glove'])        
+        
+        qa.evaluate_answer(sess, 
+                           val_context_dataset, 
+                           val_question_dataset, 
+                           val_answer_dataset, 
+                           vocab, FLAGS.evaluate, log=True)
 
 if __name__ == "__main__":
     tf.app.run()
