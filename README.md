@@ -6,6 +6,8 @@ You can run the code by command -
 
 python train.py --data_dir "[path]/data/squad/"
 
+#### The model is yet to be evaluated properly.
+
 Here is the loss convergence on dummy data of 32 data points after 10 epochs.
 
 Loss after 0 epochs, 11.6004600525  
