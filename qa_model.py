@@ -92,14 +92,16 @@ class Encoder(object):
 
         # For variation between question and context encoding space, add a non-linear projection layer
         with tf.variable_scope("encoder"):
-            W_ques_proj = tf.get_variable("W_ques_proj",shape=(1, output_size_int, output_size_int), 
+            W_ques_proj = tf.get_variable("W_ques_proj",shape=(output_size_int, output_size_int), 
                                       initializer=tf.contrib.layers.xavier_initializer())
             b_ques_proj = tf.get_variable("b_ques_proj",shape=(output_size_int,), initializer=tf.zeros_initializer())
         
-        W_ques_proj = tf.tile(W_ques_proj,[batch_size, 1, 1])
+        #W_ques_proj = tf.tile(W_ques_proj,[batch_size, 1, 1])
+        questions_encoder_outputs = tf.reshape(questions_encoder_outputs, [-1, output_size_int])
         # # final_questions_encoder_outputs - [batch_size, n+1, output_size]
         final_questions_encoder_outputs = tf.nn.tanh(tf.matmul(questions_encoder_outputs, W_ques_proj) + b_ques_proj)
-
+        final_questions_encoder_outputs = tf.reshape(final_questions_encoder_outputs, 
+                                                     [batch_size_tensor, -1, output_size_int])
         # Coattention Encoder
         aff_scores = tf.matmul(contexts_encoder_outputs, tf.transpose(final_questions_encoder_outputs,[0,2,1]))
         # aff_scores - [batch_size, m+1, n+1]
@@ -131,7 +133,7 @@ class Encoder(object):
                                                                                              dtype=tf.float32)
         # concatenate and removing last time step output as that was from sentinal vector not actual word
         final_outputs = tf.concat((encoder_fw_outputs, encoder_bw_outputs), axis=2)
-        return final_outputs[:,:-1,:] # batch_size x m x 2*output_size
+        return final_outputs # batch_size x m x 2*output_size
 
 
 class Decoder(object):
@@ -403,7 +405,6 @@ class QASystem(object):
                 ans += val_context_words_data[i][j] + " "
             ans.strip()
             predictions.append(ans)
-        print(len(val_context_tokens_data))
         assert len(predictions) == len(val_answer_words_data),"Shape of predictions and ground truths doesn't match."
         
         exact_match = 0

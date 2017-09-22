@@ -39,22 +39,23 @@ class HMN():
         inp1 = tf.concat([inputs, r], 2) # shape - [batch_size  x max_length x 3l]
 
         # change inp1 to 2d matrix [batch_size*max_length x 3l] for ease in operations
-        inp1 = tf.transpose(tf.reshape(inp1, [self.batch_size*self.max_length, -1]),[1, 0])
-        
-        inp1 = tf.tile(tf.reshape(inp1, [1, -1, self.batch_size*self.max_length]),[self.max_pool_size, 1, 1])
-        b_1 = tf.tile(tf.reshape(b_1, [1, self.hs_size, self.max_pool_size]),[self.batch_size*self.max_length, 1, 1])
-        m_t1 = tf.transpose(tf.reduce_max(tf.transpose(tf.matmul(W_1, inp1),[2,1,0]) + b_1, axis=2),[1, 0]) 
-        # [l x batch_size*max_length]
+        inp1 = tf.reshape(inp1, [self.batch_size*self.max_length, -1])
 
-        inp2 = tf.tile(tf.reshape(m_t1, [1, self.hs_size, self.max_length*self.batch_size]),[self.max_pool_size, 1, 1])
-        b_2 = tf.tile(tf.reshape(b_2, [1, self.hs_size, self.max_pool_size]),[self.batch_size*self.max_length, 1, 1])
-        m_t2 = tf.transpose(tf.reduce_max(tf.transpose(tf.matmul(W_2, inp2),[2,1,0]) + b_2, axis=2),[1, 0]) 
-        # [l x batch_size*max_length]
+        #inp1 = tf.tile(tf.reshape(inp1, [1, -1, self.batch_size*self.max_length]),[self.max_pool_size, 1, 1])
+        #b_1 = tf.tile(tf.reshape(b_1, [1, self.hs_size, self.max_pool_size]),[self.batch_size*self.max_length, 1, 1])
+        m_t1_pre = tf.reshape(tf.matmul(inp1, W_1) + b_1, [-1, self.max_pool_size, self.hs_size])
+        m_t1 = tf.reduce_max(m_t1_pre, axis=1)
+        # [batch_size*max_length x l]
 
-        inp3 = tf.tile(tf.reshape(tf.concat([m_t1, m_t2], axis=0),[1, 2*self.hs_size, -1]),[self.max_pool_size, 1, 1])
-        b_3 = tf.tile(tf.reshape(b_3, [1, 1, self.max_pool_size]),[self.batch_size*self.max_length, 1, 1])
+        #inp2 = tf.tile(tf.reshape(m_t1, [1, self.hs_size, self.max_length*self.batch_size]),[self.max_pool_size, 1, 1])
+        #b_2 = tf.tile(tf.reshape(b_2, [1, self.hs_size, self.max_pool_size]),[self.batch_size*self.max_length, 1, 1])
+        m_t2_pre = tf.reshape(tf.matmul(m_t1, W_2) + b_2, [-1, self.max_pool_size, self.hs_size])
+        m_t2 = tf.reduce_max(m_t2_pre, axis=1)
+        # [batch_size*max_length x l]
 
-        output_ = tf.reduce_max(tf.transpose(tf.matmul(W_3, inp3),[2,1,0]) + b_3, axis=2)
+        inp3 = tf.concat([m_t1, m_t2], axis=1)
+
+        output_ = tf.reduce_max(tf.matmul(inp3, W_3) + b_3, axis=1)
         output = tf.reshape(output_,[self.batch_size, self.max_length])
 
         return output
@@ -64,17 +65,17 @@ class HMN():
             W_d = tf.get_variable("W_d", shape=(self.hs_size+2*self.us_size, self.hs_size), 
                                   initializer=tf.contrib.layers.xavier_initializer())
         
-            W_1 = tf.get_variable("W_1", shape=(self.max_pool_size, self.hs_size, self.us_size+self.hs_size), 
+            W_1 = tf.get_variable("W_1", shape=(self.us_size+self.hs_size, self.max_pool_size*self.hs_size), 
                                   initializer=tf.contrib.layers.xavier_initializer()) # (p x l x 3l)
-            b_1 = tf.get_variable("b_1", shape=(self.hs_size, self.max_pool_size))
+            b_1 = tf.get_variable("b_1", shape=(self.hs_size*self.max_pool_size))
         
-            W_2 = tf.get_variable("W_2", shape=(self.max_pool_size, self.hs_size, self.hs_size), 
+            W_2 = tf.get_variable("W_2", shape=( self.hs_size, self.max_pool_size*self.hs_size), 
                                   initializer=tf.contrib.layers.xavier_initializer())
-            b_2 = tf.get_variable("b_2", shape=(self.hs_size, self.max_pool_size))
+            b_2 = tf.get_variable("b_2", shape=(self.hs_size*self.max_pool_size))
         
-            W_3 = tf.get_variable("W_3", shape=(self.max_pool_size, 1, 2*self.hs_size), 
+            W_3 = tf.get_variable("W_3", shape=(2*self.hs_size, self.max_pool_size), 
                                   initializer=tf.contrib.layers.xavier_initializer())
-            b_3 = tf.get_variable("b_3", shape=(1, self.max_pool_size))
+            b_3 = tf.get_variable("b_3", shape=(self.max_pool_size))
 
             vscope.reuse_variables()
 
