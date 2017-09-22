@@ -295,7 +295,7 @@ class QASystem(object):
             self.label_spans_placeholder: train_y,
             self.dropout_placeholder: dropout
         }
-        output_feed = [self.loss, self.train_op]
+        output_feed = [self.train_op]
         outputs = session.run(output_feed, input_feed)
 
         return outputs
@@ -481,10 +481,12 @@ class QASystem(object):
                 train_question_batch = train_question_data[j*num_batches:(j+1)*num_batches]
                 train_span_batch = train_span_data[j*num_batches:(j+1)*num_batches]
                 
-                train_loss, train_op = self.optimize(session, 
-                                                     [train_context_batch, train_question_batch], 
-                                                     train_span_batch, mask_context_batch, embeddings)
+                train_op = self.optimize(session, 
+                                        [train_context_batch, train_question_batch], 
+                                        train_span_batch, mask_context_batch, embeddings)
 
+            train_loss = self.test(session, [train_context_batch, train_question_batch],
+                                   train_span_batch, mask_context_batch, embeddings)
             print("Training Loss after {0} epochs, {1}".format(i,train_loss))
             
             print("###### Calculating Loss on validation set after epoch {}...".format(i))
